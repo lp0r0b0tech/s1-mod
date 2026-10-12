@@ -320,7 +320,9 @@ namespace ui_scripting
 				console::info("[hks] Loading chunk '%s'\n", chunk_name);
 			}
 
-			return utils::hook::invoke<int>(0x14009CA10, state, compiler_options, reader, reader_data, chunk_name);
+			const auto result = utils::hook::invoke<int>(0x14009CA10, state, compiler_options, reader, reader_data, chunk_name);
+			console::info("[hks] Loaded chunk '%s': result=%d\n", chunk_name != nullptr ? chunk_name : "<null>", result);
+			return result;
 		}
 
 		int main_handler(game::hks::lua_State* state)
