@@ -15,6 +15,7 @@
 
 #include "ui_scripting.hpp"
 
+#include <utils/flags.hpp>
 #include <utils/hook.hpp>
 #include <utils/io.hpp>
 
@@ -406,7 +407,15 @@ namespace ui_scripting
 			utils::hook::call(0x1400CB7D6, db_find_x_asset_header_stub);
 			utils::hook::call(0x1400CB861, hks_load_stub);
 
-			hks_package_require_hook.create(0x1400781D0, hks_package_require_stub);
+			if (utils::flags::has_flag("no_hks_package_require_hook"))
+			{
+				console::info("HKS package require hook disabled by -no_hks_package_require_hook\n");
+			}
+			else
+			{
+				hks_package_require_hook.create(0x1400781D0, hks_package_require_stub);
+			}
+
 			hks_start_hook.create(0x1400E4E40, hks_start_stub);
 			hks_shutdown_hook.create(0x1400DB9A0, hks_shutdown_stub);
 
