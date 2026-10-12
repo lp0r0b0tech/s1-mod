@@ -266,6 +266,8 @@ namespace ui_scripting
 		void* hks_package_require_stub(game::hks::lua_State* state)
 		{
 			const auto script = get_current_script();
+			console::info("[hks] require caller '%s'\n", script.data());
+
 			const auto root = get_root_script(script);
 			globals.in_require_script = root;
 			return hks_package_require_hook.invoke<void*>(state);
@@ -273,6 +275,11 @@ namespace ui_scripting
 
 		game::XAssetHeader db_find_x_asset_header_stub(game::XAssetType type, const char* name, int allow_create_default)
 		{
+			if (name != nullptr)
+			{
+				console::info("[hks] require lookup type=%d name='%s'\n", static_cast<int>(type), name);
+			}
+
 			game::XAssetHeader header{.luaFile = nullptr};
 
 			if (!is_loaded_script(globals.in_require_script))
