@@ -126,6 +126,13 @@ namespace mods
 
 		void db_load_x_assets_stub(game::XZoneInfo* zone_info, unsigned int zone_count, game::DBSyncMode sync_mode)
 		{
+			static std::atomic_flag first_db_load_logged = ATOMIC_FLAG_INIT;
+			if (!first_db_load_logged.test_and_set(std::memory_order_relaxed))
+			{
+				console::info("[mods] First DB_LoadXAssets via R_LoadGraphicsAssets: zone_count=%u sync_mode=%d\n",
+					zone_count, static_cast<int>(sync_mode));
+			}
+
 			std::vector<game::XZoneInfo> zones(zone_info, zone_info + zone_count);
 
 			if (db_mod_file_exists())

@@ -119,6 +119,15 @@ namespace fastfiles
 			static char new_pool[element_size * Size]{0};
 		assert(get_asset_type_size(Type) == game::DB_GetXAssetTypeSize(Type));
 
+		const auto old_pool = game::DB_XAssetPool[Type];
+		const auto old_count = game::g_poolSize[Type];
+
+		if constexpr (Type == game::ASSET_TYPE_FONT)
+		{
+			console::info("[fastfiles] FONT pool: database_ready=%d old_pool=%p old_count=%d element_size=%d new_pool=%p new_count=%d\n",
+				game::Sys_IsDatabaseReady2(), old_pool, old_count, element_size, static_cast<void*>(new_pool), static_cast<int>(Size));
+		}
+
 		std::memmove(new_pool, game::DB_XAssetPool[Type], game::g_poolSize[Type] * element_size);
 
 		game::DB_XAssetPool[Type] = new_pool;

@@ -308,6 +308,11 @@ namespace ui_scripting
 				return load_buffer(globals.raw_script_name, utils::io::read_file(globals.raw_script_name));
 			}
 
+			if (chunk_name != nullptr)
+			{
+				console::info("[hks] Loading chunk '%s'\n", chunk_name);
+			}
+
 			return utils::hook::invoke<int>(0x14009CA10, state, compiler_options, reader, reader_data, chunk_name);
 		}
 
