@@ -115,7 +115,8 @@ namespace fastfiles
 	char* reallocate_asset_pool()
 	{
 		constexpr auto element_size = get_asset_type_size(Type);
-		static char new_pool[element_size * Size]{0};
+		alignas(Type == game::ASSET_TYPE_FONT ? alignof(game::Font_s) : alignof(char))
+			static char new_pool[element_size * Size]{0};
 		assert(get_asset_type_size(Type) == game::DB_GetXAssetTypeSize(Type));
 
 		std::memmove(new_pool, game::DB_XAssetPool[Type], game::g_poolSize[Type] * element_size);
