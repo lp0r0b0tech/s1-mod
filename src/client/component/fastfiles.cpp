@@ -156,7 +156,14 @@ namespace fastfiles
 			// Allow loading of mixed compressor types
 			utils::hook::nop(SELECT_VALUE(0x1401536D7, 0x140242DF7), 2);
 
-			reallocate_asset_pool<game::ASSET_TYPE_FONT, 48>();
+			if (game::environment::is_mp())
+			{
+				reallocate_asset_pool<game::ASSET_TYPE_FONT, 64>();
+			}
+			else
+			{
+				reallocate_asset_pool<game::ASSET_TYPE_FONT, 48>();
+			}
 
 			if (!game::environment::is_sp())
 			{
