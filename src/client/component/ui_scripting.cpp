@@ -266,7 +266,22 @@ namespace ui_scripting
 		void* hks_package_require_stub(game::hks::lua_State* state)
 		{
 			const auto script = get_current_script();
-			console::info("[hks] require caller '%s'\n", script.data());
+			game::hks::lua_Debug info{};
+			const auto stack_result = game::hks::hksi_lua_getstack(state, 1, &info);
+			const auto info_result = stack_result != 0
+				? game::hks::hksi_lua_getinfo(state, "nSl", &info)
+				: 0;
+
+			if (stack_result != 0 && info_result != 0)
+			{
+				console::info("[hks] require caller '%s' name='%s' line=%d\n", info.short_src,
+					info.name != nullptr ? info.name : "<null>", info.currentline);
+			}
+			else
+			{
+				console::info("[hks] require caller '%s' debug info unavailable (getstack=%d getinfo=%d)\n",
+					script.data(), stack_result, info_result);
+			}
 
 			const auto root = get_root_script(script);
 			globals.in_require_script = root;
