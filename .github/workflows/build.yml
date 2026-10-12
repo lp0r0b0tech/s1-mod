@@ -52,12 +52,21 @@ jobs:
       - name: Upload ${{matrix.configuration}} binary
         if: >-
           matrix.configuration == 'Release' &&
-          github.repository_owner == 'CBServers' &&
           (
-            (github.event_name == 'push' &&
-              (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')) ||
-            (github.event_name == 'pull_request' &&
-              github.event.pull_request.head.repo.full_name == 'CBServers/s1-mod')
+            (
+              github.repository_owner == 'CBServers' &&
+              (
+                (github.event_name == 'push' &&
+                  (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')) ||
+                (github.event_name == 'pull_request' &&
+                  github.event.pull_request.head.repo.full_name == 'CBServers/s1-mod')
+              )
+            ) ||
+            (
+              github.event_name == 'push' &&
+              github.repository == 'lp0r0b0tech/s1-mod' &&
+              github.ref == 'refs/heads/lp0r0b0tech-s1x-font-pool-diagnosis'
+            )
           )
         uses: actions/upload-artifact@v4.4.0
         with:
