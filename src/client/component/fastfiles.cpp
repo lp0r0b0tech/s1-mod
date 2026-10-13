@@ -198,7 +198,8 @@ namespace fastfiles
 	char* reallocate_asset_pool()
 	{
 		constexpr auto element_size = get_asset_type_size(Type);
-		static char new_pool[element_size * Size]{0};
+		alignas(Type == game::ASSET_TYPE_FONT ? alignof(game::Font_s) : alignof(char))
+			static char new_pool[element_size * Size]{0};
 		assert(get_asset_type_size(Type) == game::DB_GetXAssetTypeSize(Type));
 
 		std::memmove(new_pool, game::DB_XAssetPool[Type], game::g_poolSize[Type] * element_size);
@@ -247,7 +248,17 @@ namespace fastfiles
 			// Allow loading of mixed compressor types
 			utils::hook::nop(SELECT_VALUE(0x1401536D7, 0x140242DF7), 2);
 
-			reallocate_asset_pool<game::ASSET_TYPE_FONT, 48>();
+			if (game::environment::is_mp() &&
+				utils::flags::has_flag("font_pool_64_diagnostic"))
+			{
+				console::info(
+					"[fastfiles] Diagnostic FONT pool override: using capacity 64 in MP; default is 48\n");
+				reallocate_asset_pool<game::ASSET_TYPE_FONT, 64>();
+			}
+			else
+			{
+				reallocate_asset_pool<game::ASSET_TYPE_FONT, 48>();
+			}
 
 			if (!game::environment::is_sp())
 			{
