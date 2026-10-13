@@ -56,6 +56,17 @@ jobs:
           name: ${{matrix.configuration}} Binary
           path: |
             build/bin/x64/${{matrix.configuration}}/s1x.exe
+
+      - name: Upload fork ${{matrix.configuration}} binary
+        if: >-
+          matrix.configuration == 'Release' &&
+          github.repository_owner == 'lp0r0b0tech' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/lp0r0b0tech-font-pool-startup-diagnostic'
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: ${{matrix.configuration}} Binary
+          path: build/bin/x64/${{matrix.configuration}}/s1x.exe
             
       - name: Upload ${{matrix.configuration}} data artifacts
         if: matrix.configuration == 'Release' && github.repository_owner == 'CBServers' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')
