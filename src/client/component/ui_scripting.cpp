@@ -190,13 +190,13 @@ namespace ui_scripting
 				std::string_view::npos;
 		}
 
-		void install_emblem_table_name_function(const table& lua)
+		void install_lui_engine_compatibility_functions(const table& lua)
 		{
 			const auto engine_value = lua["Engine"];
 			if (!engine_value.is<table>())
 			{
 				console::error(
-					"[ui_scripting] Cannot register Engine.GetPlayercardEmblemTableName: "
+					"[ui_scripting] Cannot register LUI Engine compatibility functions: "
 					"global Engine is missing or is not a table\n");
 				return;
 			}
@@ -218,55 +218,30 @@ namespace ui_scripting
 					return std::string(table_name);
 				};
 			}
-		}
 
-		void install_is_steam_diagnostic_function(const table& lua)
-		{
-			const auto engine_value = lua["Engine"];
-			if (!engine_value.is<table>())
+			if (!engine_type["IsSteam"].is<function>())
 			{
-				console::error(
-					"[ui_scripting] Cannot register diagnostic Engine.IsSteam: "
-					"global Engine is missing or is not a table\n");
-				return;
+				engine_type["IsSteam"] = []()
+				{
+					return true;
+				};
 			}
 
-			auto engine_type = engine_value.as<table>();
-			const auto previous_type = engine_type["IsSteam"].get_raw().t;
-			console::info(
-				"[ui_scripting] HKS Steam diagnostic: overriding Engine.IsSteam from %s(%u); "
-				"shim returns true\n",
-				hks_type_name(previous_type), static_cast<unsigned int>(previous_type));
-			engine_type["IsSteam"] = []()
+			if (!engine_type["IsGDK"].is<function>())
 			{
-				return true;
-			};
-		}
-
-		void install_false_engine_diagnostic_function(
-			const table& lua, const char* const function_name)
-		{
-			const auto engine_value = lua["Engine"];
-			if (!engine_value.is<table>())
-			{
-				console::error(
-					"[ui_scripting] Cannot register diagnostic Engine.%s: "
-					"global Engine is missing or is not a table\n",
-					function_name);
-				return;
+				engine_type["IsGDK"] = []()
+				{
+					return false;
+				};
 			}
 
-			auto engine_type = engine_value.as<table>();
-			const auto previous_type = engine_type[function_name].get_raw().t;
-			console::info(
-				"[ui_scripting] HKS MP Zombies diagnostic: overriding Engine.%s from %s(%u); "
-				"shim returns false\n",
-				function_name, hks_type_name(previous_type),
-				static_cast<unsigned int>(previous_type));
-			engine_type[function_name] = []()
+			if (!engine_type["IsUbiConnect"].is<function>())
 			{
-				return false;
-			};
+				engine_type["IsUbiConnect"] = []()
+				{
+					return false;
+				};
+			}
 		}
 
 		bool is_cod_lua_chunk(const char* chunk_name)
@@ -669,7 +644,7 @@ namespace ui_scripting
 			const auto lua = get_globals();
 
 			log_engine_status("setup_functions before registration", lua);
-			install_emblem_table_name_function(lua);
+			install_lui_engine_compatibility_functions(lua);
 			log_engine_status("setup_functions after registration", lua);
 
 			using game = table;
@@ -878,39 +853,11 @@ namespace ui_scripting
 
 			if (is_cod_lua_chunk(chunk_name))
 			{
-				install_emblem_table_name_function(table{state->globals.v.table});
+				install_lui_engine_compatibility_functions(
+					table{state->globals.v.table});
 				log_engine_status(
-					"after CoD.lua registration", table{state->globals.v.table});
-			}
-
-			if (utils::flags::has_flag("hks_is_steam_diagnostic") &&
-				is_friends_menu_chunk(chunk_name))
-			{
-				const auto lua = table{state->globals.v.table};
-				install_is_steam_diagnostic_function(lua);
-				log_engine_status("after Steam diagnostic registration", lua);
-			}
-
-			if (is_mp_zombies_movies_chunk(chunk_name))
-			{
-				const auto lua = table{state->globals.v.table};
-				bool diagnostic_function_registered = false;
-				if (utils::flags::has_flag("hks_mp_zombies_is_gdk_diagnostic"))
-				{
-					install_false_engine_diagnostic_function(lua, "IsGDK");
-					diagnostic_function_registered = true;
-				}
-
-				if (utils::flags::has_flag("hks_mp_zombies_is_ubiconnect_diagnostic"))
-				{
-					install_false_engine_diagnostic_function(lua, "IsUbiConnect");
-					diagnostic_function_registered = true;
-				}
-
-				if (diagnostic_function_registered)
-				{
-					log_engine_status("after MP Zombies diagnostic registration", lua);
-				}
+					"after CoD.lua compatibility registration",
+					table{state->globals.v.table});
 			}
 
 			if (globals.load_raw_script)
