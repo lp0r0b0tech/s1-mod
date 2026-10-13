@@ -71,7 +71,7 @@ jobs:
       - name: Upload Tracer diagnostic ${{ matrix.configuration }} binary
         if: >-
           matrix.configuration == 'Release' &&
-          github.repository == 'CBServers/s1-mod' &&
+          (github.repository == 'CBServers/s1-mod' || github.repository == 'lp0r0b0tech/s1-mod') &&
           github.event_name == 'push' &&
           github.ref == 'refs/heads/lp0r0b0tech-opt-in-tracer-pool-probe'
         uses: actions/upload-artifact@v4.4.0
