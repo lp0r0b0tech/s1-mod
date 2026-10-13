@@ -198,7 +198,9 @@ namespace fastfiles
 	char* reallocate_asset_pool()
 	{
 		constexpr auto element_size = get_asset_type_size(Type);
-		alignas(Type == game::ASSET_TYPE_FONT ? alignof(game::Font_s) : alignof(char))
+		alignas(Type == game::ASSET_TYPE_FONT
+			? alignof(game::Font_s)
+			: Type == game::ASSET_TYPE_XANIMPARTS ? alignof(void*) : alignof(char))
 			static char new_pool[element_size * Size]{0};
 		assert(get_asset_type_size(Type) == game::DB_GetXAssetTypeSize(Type));
 
@@ -258,6 +260,51 @@ namespace fastfiles
 			else
 			{
 				reallocate_asset_pool<game::ASSET_TYPE_FONT, 48>();
+			}
+
+			if (game::environment::is_mp() &&
+				utils::flags::has_flag("xanim_pool_11600_diagnostic"))
+			{
+				constexpr auto diagnostic_xanim_pool_size = 11600;
+				const auto xanim_type = game::ASSET_TYPE_XANIMPARTS;
+				const auto old_pool = game::DB_XAssetPool[xanim_type];
+				const auto old_pool_size = game::g_poolSize[xanim_type];
+				if (old_pool == nullptr || old_pool_size <= 0)
+				{
+					console::error(
+						"[fastfiles] Diagnostic XAnim pool override skipped: "
+						"capacity %d -> %d (pool=%p)\n",
+						old_pool_size, old_pool_size, old_pool);
+				}
+				else if (old_pool_size > diagnostic_xanim_pool_size)
+				{
+					console::warn(
+						"[fastfiles] Diagnostic XAnim pool override skipped: "
+						"capacity %d -> %d; current pool exceeds requested capacity %d\n",
+						old_pool_size, old_pool_size, diagnostic_xanim_pool_size);
+				}
+				else if (old_pool_size == diagnostic_xanim_pool_size)
+				{
+					console::info(
+						"[fastfiles] Diagnostic XAnim pool size unchanged: %d -> %d\n",
+						old_pool_size, old_pool_size);
+				}
+				else
+				{
+					// This leaves the original storage mapped but cannot rebase cached pointers.
+					reallocate_asset_pool<
+						game::ASSET_TYPE_XANIMPARTS, diagnostic_xanim_pool_size>();
+					console::info(
+						"[fastfiles] Diagnostic XAnim pool override: capacity %d -> %d "
+						"(element_size=%d, bytes=%llu -> %llu); cached pointers are not rebased, "
+						"opt-in test only\n",
+						old_pool_size, game::g_poolSize[xanim_type],
+						get_asset_type_size(xanim_type),
+						static_cast<unsigned long long>(
+							old_pool_size * get_asset_type_size(xanim_type)),
+						static_cast<unsigned long long>(
+							game::g_poolSize[xanim_type] * get_asset_type_size(xanim_type)));
+				}
 			}
 
 			if (!game::environment::is_sp())
