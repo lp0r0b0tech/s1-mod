@@ -22,6 +22,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
 #include <string_view>
 
 namespace ui_scripting
@@ -158,6 +159,13 @@ namespace ui_scripting
 				name.find("mp_menus\\main") != std::string_view::npos;
 		}
 
+		bool is_friends_menu_chunk(const char* chunk_name)
+		{
+			return chunk_name != nullptr &&
+				std::string_view(chunk_name).find("common_menus/FriendsMenu.lua") !=
+				std::string_view::npos;
+		}
+
 		void install_emblem_table_name_function(const table& lua)
 		{
 			const auto engine_value = lua["Engine"];
@@ -216,6 +224,126 @@ namespace ui_scripting
 			return info.short_src;
 		}
 
+		bool read_hks_diagnostic_memory(
+			const std::uintptr_t address, void* output, const std::size_t size)
+		{
+			SIZE_T bytes_read{};
+			return address != 0 &&
+				ReadProcessMemory(
+					GetCurrentProcess(), reinterpret_cast<const void*>(address),
+					output, size, &bytes_read) != FALSE &&
+				bytes_read == size;
+		}
+
+		void append_hks_frame_diagnostics(
+			std::string& diagnostic, const game::hks::lua_State* state)
+		{
+			const auto& call_stack = state->m_callStack;
+			diagnostic += std::format(
+				"[hks] VM stack records={} last_record={} current_record={} lua_pc={} "
+				"hook_return={} hook_level={}\n",
+				static_cast<const void*>(call_stack.m_records),
+				static_cast<const void*>(call_stack.m_lastrecord),
+				static_cast<const void*>(call_stack.m_current),
+				static_cast<const void*>(call_stack.m_current_lua_pc),
+				static_cast<const void*>(call_stack.m_hook_return_addr),
+				call_stack.m_hook_level);
+
+			game::hks::ActivationRecord active_record{};
+			const auto active_record_address =
+				reinterpret_cast<std::uintptr_t>(call_stack.m_current);
+			const auto active_record_available = read_hks_diagnostic_memory(
+				active_record_address, &active_record, sizeof(active_record));
+			if (active_record_available)
+			{
+				diagnostic += std::format(
+					"[hks] active record base={} return_address={} tail_call_depth={} "
+					"varargs={} expected_returns={}\n",
+					static_cast<const void*>(active_record.m_base),
+					static_cast<const void*>(active_record.m_returnAddress),
+					active_record.m_tailCallDepth, active_record.m_numVarargs,
+					active_record.m_numExpectedReturns);
+
+				const auto return_address =
+					reinterpret_cast<std::uintptr_t>(active_record.m_returnAddress);
+				if (return_address >= sizeof(std::uint32_t))
+				{
+					std::uint32_t return_instruction{};
+					const auto instruction_address = return_address - sizeof(return_instruction);
+					if (read_hks_diagnostic_memory(
+						instruction_address, &return_instruction, sizeof(return_instruction)))
+					{
+						diagnostic += std::format(
+							"[hks] preceding return instruction address={} word=0x{:08X} "
+							"opcode={} A={}\n",
+							reinterpret_cast<const void*>(instruction_address),
+							return_instruction, (return_instruction >> 25) & 0x7F,
+							return_instruction & 0xFF);
+					}
+				}
+			}
+			else
+			{
+				diagnostic += "[hks] active record unavailable\n";
+			}
+
+			const auto lua_pc_address =
+				reinterpret_cast<std::uintptr_t>(call_stack.m_current_lua_pc);
+			if (lua_pc_address == 0)
+			{
+				diagnostic += "[hks] current Lua PC is null\n";
+				return;
+			}
+
+			for (int offset = -2; offset <= 2; ++offset)
+			{
+				const auto signed_address = static_cast<std::intptr_t>(lua_pc_address) +
+					static_cast<std::intptr_t>(offset) *
+					static_cast<std::intptr_t>(sizeof(std::uint32_t));
+				if (signed_address <= 0)
+				{
+					continue;
+				}
+
+				const auto instruction_address = static_cast<std::uintptr_t>(signed_address);
+				std::uint32_t instruction{};
+				if (!read_hks_diagnostic_memory(
+					instruction_address, &instruction, sizeof(instruction)))
+				{
+					diagnostic += std::format(
+						"[hks] instruction pc{:+} address={} unavailable\n",
+						offset, reinterpret_cast<const void*>(instruction_address));
+					continue;
+				}
+
+				const auto opcode = (instruction >> 25) & 0x7F;
+				const auto register_a = instruction & 0xFF;
+				auto instruction_diagnostic = std::format(
+					"[hks] instruction pc{:+} address={} word=0x{:08X} opcode={} A={}",
+					offset, reinterpret_cast<const void*>(instruction_address),
+					instruction, opcode, register_a);
+
+				if (active_record_available && active_record.m_base != nullptr)
+				{
+					const auto register_address =
+						reinterpret_cast<std::uintptr_t>(active_record.m_base) +
+						register_a * sizeof(game::hks::HksObject);
+					game::hks::HksObject register_value{};
+					if (read_hks_diagnostic_memory(
+						register_address, &register_value, sizeof(register_value)))
+					{
+						instruction_diagnostic += std::format(
+							" R{}={}({}) payload=0x{:016X}",
+							register_a, hks_type_name(register_value.t),
+							static_cast<unsigned int>(register_value.t),
+							register_value.v.ui64);
+					}
+				}
+
+				diagnostic += instruction_diagnostic + "\n";
+			}
+		}
+
 		void log_hks_error(game::hks::lua_State* state, const char* error)
 		{
 			void* native_frames[32]{};
@@ -230,7 +358,9 @@ namespace ui_scripting
 					static_cast<unsigned int>(state->m_error), state->m_callStack.m_hook_level,
 					static_cast<void*>(state->m_callStack.m_current));
 
-				for (int level = 1; level < 64; ++level)
+				append_hks_frame_diagnostics(diagnostic, state);
+
+				for (int level = 0; level < 64; ++level)
 				{
 					game::hks::lua_Debug info{};
 					if (game::hks::hksi_lua_getstack(state, level, &info) == 0)
@@ -573,11 +703,15 @@ namespace ui_scripting
 				is_cod_lua_chunk(chunk_name);
 			const auto capture_mp_menus_main = utils::flags::has_flag("hks_lui_load_trace") &&
 				is_mp_menus_main_chunk(chunk_name);
-			if (capture_cod_chunk || capture_mp_menus_main)
+			const auto capture_friends_menu = utils::flags::has_flag("hks_lui_load_trace") &&
+				is_friends_menu_chunk(chunk_name);
+			if (capture_cod_chunk || capture_mp_menus_main || capture_friends_menu)
 			{
 				const auto* const dump_path = capture_cod_chunk
 					? "hks_cod_lua_reader.bin"
-					: "hks_lui_mp_menus_main_reader.bin";
+					: capture_mp_menus_main
+					? "hks_lui_mp_menus_main_reader.bin"
+					: "hks_lui_friendsmenu_reader.bin";
 				std::FILE* dump_file{};
 				const auto open_result = ::fopen_s(&dump_file, dump_path, "wb");
 				if (open_result != 0 || dump_file == nullptr)
