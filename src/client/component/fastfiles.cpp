@@ -200,7 +200,8 @@ namespace fastfiles
 		constexpr auto element_size = get_asset_type_size(Type);
 		alignas(Type == game::ASSET_TYPE_FONT
 			? alignof(game::Font_s)
-			: Type == game::ASSET_TYPE_XANIMPARTS ? alignof(void*) : alignof(char))
+			: Type == game::ASSET_TYPE_XANIMPARTS ? alignof(void*)
+			: Type == game::ASSET_TYPE_TRACER ? 128 : alignof(char))
 			static char new_pool[element_size * Size]{0};
 		assert(get_asset_type_size(Type) == game::DB_GetXAssetTypeSize(Type));
 
@@ -304,6 +305,63 @@ namespace fastfiles
 							old_pool_size * get_asset_type_size(xanim_type)),
 						static_cast<unsigned long long>(
 							game::g_poolSize[xanim_type] * get_asset_type_size(xanim_type)));
+				}
+			}
+
+			if (game::environment::is_mp() &&
+				utils::flags::has_flag("tracer_pool_64_diagnostic"))
+			{
+				constexpr auto diagnostic_tracer_pool_size = 64;
+				constexpr auto diagnostic_tracer_element_size = 128;
+				const auto tracer_type = game::ASSET_TYPE_TRACER;
+				const auto old_pool = game::DB_XAssetPool[tracer_type];
+				const auto old_pool_size = game::g_poolSize[tracer_type];
+				const auto tracer_element_size = get_asset_type_size(tracer_type);
+				const auto engine_tracer_element_size = game::DB_GetXAssetTypeSize(tracer_type);
+				if (tracer_element_size != diagnostic_tracer_element_size ||
+					tracer_element_size != engine_tracer_element_size)
+				{
+					console::error(
+						"[fastfiles] Diagnostic Tracer pool override skipped: "
+						"capacity %d -> %d; expected element size %d, table size %d, engine size %d\n",
+						old_pool_size, old_pool_size, diagnostic_tracer_element_size,
+						tracer_element_size, engine_tracer_element_size);
+				}
+				else if (old_pool == nullptr || old_pool_size <= 0)
+				{
+					console::error(
+						"[fastfiles] Diagnostic Tracer pool override skipped: "
+						"capacity %d -> %d (pool=%p)\n",
+						old_pool_size, old_pool_size, old_pool);
+				}
+				else if (old_pool_size > diagnostic_tracer_pool_size)
+				{
+					console::warn(
+						"[fastfiles] Diagnostic Tracer pool override skipped: "
+						"capacity %d -> %d; current pool exceeds requested capacity %d\n",
+						old_pool_size, old_pool_size, diagnostic_tracer_pool_size);
+				}
+				else if (old_pool_size == diagnostic_tracer_pool_size)
+				{
+					console::info(
+						"[fastfiles] Diagnostic Tracer pool size unchanged: %d -> %d\n",
+						old_pool_size, old_pool_size);
+				}
+				else
+				{
+					reallocate_asset_pool<
+						game::ASSET_TYPE_TRACER, diagnostic_tracer_pool_size>();
+					console::info(
+						"[fastfiles] Diagnostic Tracer pool override: capacity %d -> %d "
+						"(element_size=%d, bytes=%llu -> %llu, buffer_alignment=128 bytes); "
+						"alignment is conservative, not an engine contract; cached pointers are "
+						"not rebased and pool lifecycle safety is unverified; opt-in test only\n",
+						old_pool_size, game::g_poolSize[tracer_type],
+						tracer_element_size,
+						static_cast<unsigned long long>(
+							old_pool_size * get_asset_type_size(tracer_type)),
+						static_cast<unsigned long long>(
+							game::g_poolSize[tracer_type] * get_asset_type_size(tracer_type)));
 				}
 			}
 

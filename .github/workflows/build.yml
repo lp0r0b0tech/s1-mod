@@ -67,6 +67,17 @@ jobs:
         with:
           name: ${{matrix.configuration}} Binary
           path: build/bin/x64/${{matrix.configuration}}/s1x.exe
+
+      - name: Upload Tracer diagnostic ${{ matrix.configuration }} binary
+        if: >-
+          matrix.configuration == 'Release' &&
+          github.repository == 'CBServers/s1-mod' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/lp0r0b0tech-opt-in-tracer-pool-probe'
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: ${{ matrix.configuration }} Tracer diagnostic Binary
+          path: build/bin/x64/${{ matrix.configuration }}/s1x.exe
             
       - name: Upload ${{matrix.configuration}} data artifacts
         if: matrix.configuration == 'Release' && github.repository_owner == 'CBServers' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')
