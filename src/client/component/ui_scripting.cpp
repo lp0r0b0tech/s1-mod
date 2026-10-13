@@ -118,7 +118,8 @@ namespace ui_scripting
 				console::info(
 					"[ui_scripting] HKS LUI trace: %s Engine=%s(%u), "
 					"Engine.GetPlayercardEmblemTableName=<unavailable>, "
-					"Engine.IsSteam=<unavailable>\n",
+					"Engine.IsSteam=<unavailable>, Engine.IsGDK=<unavailable>, "
+					"Engine.IsUbiConnect=<unavailable>\n",
 					stage, hks_type_name(engine_object_type),
 					static_cast<unsigned int>(engine_object_type));
 				return;
@@ -129,16 +130,25 @@ namespace ui_scripting
 			const auto function_object_type = function_value.get_raw().t;
 			const auto is_steam_value = engine_type["IsSteam"];
 			const auto is_steam_object_type = is_steam_value.get_raw().t;
+			const auto is_gdk_value = engine_type["IsGDK"];
+			const auto is_gdk_object_type = is_gdk_value.get_raw().t;
+			const auto is_ubi_connect_value = engine_type["IsUbiConnect"];
+			const auto is_ubi_connect_object_type = is_ubi_connect_value.get_raw().t;
 			console::info(
 				"[ui_scripting] HKS LUI trace: %s Engine=%s(%u), "
 				"Engine.GetPlayercardEmblemTableName=%s(%u), "
-				"Engine.IsSteam=%s(%u)\n",
+				"Engine.IsSteam=%s(%u), Engine.IsGDK=%s(%u), "
+				"Engine.IsUbiConnect=%s(%u)\n",
 				stage, hks_type_name(engine_object_type),
 				static_cast<unsigned int>(engine_object_type),
 				hks_type_name(function_object_type),
 				static_cast<unsigned int>(function_object_type),
 				hks_type_name(is_steam_object_type),
-				static_cast<unsigned int>(is_steam_object_type));
+				static_cast<unsigned int>(is_steam_object_type),
+				hks_type_name(is_gdk_object_type),
+				static_cast<unsigned int>(is_gdk_object_type),
+				hks_type_name(is_ubi_connect_object_type),
+				static_cast<unsigned int>(is_ubi_connect_object_type));
 		}
 
 		bool is_lui_chunk_name(const char* chunk_name)
@@ -230,6 +240,32 @@ namespace ui_scripting
 			engine_type["IsSteam"] = []()
 			{
 				return true;
+			};
+		}
+
+		void install_false_engine_diagnostic_function(
+			const table& lua, const char* const function_name)
+		{
+			const auto engine_value = lua["Engine"];
+			if (!engine_value.is<table>())
+			{
+				console::error(
+					"[ui_scripting] Cannot register diagnostic Engine.%s: "
+					"global Engine is missing or is not a table\n",
+					function_name);
+				return;
+			}
+
+			auto engine_type = engine_value.as<table>();
+			const auto previous_type = engine_type[function_name].get_raw().t;
+			console::info(
+				"[ui_scripting] HKS MP Zombies diagnostic: overriding Engine.%s from %s(%u); "
+				"shim returns false\n",
+				function_name, hks_type_name(previous_type),
+				static_cast<unsigned int>(previous_type));
+			engine_type[function_name] = []()
+			{
+				return false;
 			};
 		}
 
@@ -853,6 +889,28 @@ namespace ui_scripting
 				const auto lua = table{state->globals.v.table};
 				install_is_steam_diagnostic_function(lua);
 				log_engine_status("after Steam diagnostic registration", lua);
+			}
+
+			if (is_mp_zombies_movies_chunk(chunk_name))
+			{
+				const auto lua = table{state->globals.v.table};
+				bool diagnostic_function_registered = false;
+				if (utils::flags::has_flag("hks_mp_zombies_is_gdk_diagnostic"))
+				{
+					install_false_engine_diagnostic_function(lua, "IsGDK");
+					diagnostic_function_registered = true;
+				}
+
+				if (utils::flags::has_flag("hks_mp_zombies_is_ubiconnect_diagnostic"))
+				{
+					install_false_engine_diagnostic_function(lua, "IsUbiConnect");
+					diagnostic_function_registered = true;
+				}
+
+				if (diagnostic_function_registered)
+				{
+					log_engine_status("after MP Zombies diagnostic registration", lua);
+				}
 			}
 
 			if (globals.load_raw_script)
