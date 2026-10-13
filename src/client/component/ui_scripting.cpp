@@ -35,6 +35,7 @@ namespace ui_scripting
 		utils::hook::detour hks_shutdown_hook;
 		utils::hook::detour hks_package_require_hook;
 		utils::hook::detour hks_lua_error_hook;
+		utils::hook::detour hks_vm_call_internal_hook;
 
 		struct script
 		{
@@ -172,6 +173,13 @@ namespace ui_scripting
 				std::string_view::npos;
 		}
 
+		bool is_mp_zombies_movies_chunk(const char* chunk_name)
+		{
+			return chunk_name != nullptr &&
+				std::string_view(chunk_name).find("MPZombiesMovies.lua") !=
+				std::string_view::npos;
+		}
+
 		void install_emblem_table_name_function(const table& lua)
 		{
 			const auto engine_value = lua["Engine"];
@@ -262,6 +270,125 @@ namespace ui_scripting
 					GetCurrentProcess(), reinterpret_cast<const void*>(address),
 					output, size, &bytes_read) != FALSE &&
 				bytes_read == size;
+		}
+
+		struct hks_vm_call_snapshot
+		{
+			const game::hks::lua_State* state{};
+			int nargs{};
+			int nresults{};
+			const game::hks::hksInstruction* pc{};
+			const game::hks::hksInstruction* state_pc{};
+			const game::hks::ActivationRecord* record{};
+		};
+
+		thread_local hks_vm_call_snapshot last_hks_vm_call{};
+
+		void capture_hks_vm_call_snapshot(
+			game::hks::lua_State* state, const int nargs, const int nresults,
+			const unsigned int* pc)
+		{
+			last_hks_vm_call = {};
+			auto& snapshot = last_hks_vm_call;
+			snapshot.state = state;
+			snapshot.nargs = nargs;
+			snapshot.nresults = nresults;
+			snapshot.pc = reinterpret_cast<const game::hks::hksInstruction*>(pc);
+
+			if (state == nullptr)
+			{
+				return;
+			}
+
+			snapshot.state_pc = state->m_callStack.m_current_lua_pc;
+			snapshot.record = state->m_callStack.m_current;
+		}
+
+		void hks_vm_call_internal_stub(
+			game::hks::lua_State* state, const int nargs, const int nresults,
+			const unsigned int* pc)
+		{
+			capture_hks_vm_call_snapshot(state, nargs, nresults, pc);
+			hks_vm_call_internal_hook.invoke<void>(state, nargs, nresults, pc);
+		}
+
+		void append_hks_vm_call_diagnostics(
+			std::string& diagnostic, const game::hks::lua_State* state,
+			const hks_vm_call_snapshot& snapshot)
+		{
+			if (snapshot.state == nullptr)
+			{
+				diagnostic += "[hks] no vm_call_internal snapshot captured\n";
+				return;
+			}
+
+			game::hks::ActivationRecord activation{};
+			const auto activation_available = read_hks_diagnostic_memory(
+				reinterpret_cast<std::uintptr_t>(snapshot.record),
+				&activation, sizeof(activation));
+			diagnostic += std::format(
+				"[hks] last vm_call_internal state={} nargs={} nresults={} pc={} "
+				"state_lua_pc={} current_record={} base={} return_address={}{}\n",
+				static_cast<const void*>(snapshot.state), snapshot.nargs, snapshot.nresults,
+				static_cast<const void*>(snapshot.pc),
+				static_cast<const void*>(snapshot.state_pc),
+				static_cast<const void*>(snapshot.record),
+				activation_available
+					? static_cast<const void*>(activation.m_base) : nullptr,
+				activation_available
+					? static_cast<const void*>(activation.m_returnAddress) : nullptr,
+				snapshot.state == state ? "" : " (state mismatch)");
+
+			const auto pc_address = reinterpret_cast<std::uintptr_t>(snapshot.pc);
+			for (int offset = -2; offset <= 2; ++offset)
+			{
+				const auto signed_address = static_cast<std::intptr_t>(pc_address) +
+					static_cast<std::intptr_t>(offset) *
+					static_cast<std::intptr_t>(sizeof(std::uint32_t));
+				if (pc_address == 0 || signed_address <= 0)
+				{
+					diagnostic += std::format(
+						"[hks] vm instruction pc{:+} address=null unavailable\n", offset);
+					continue;
+				}
+
+				const auto instruction_address =
+					static_cast<std::uintptr_t>(signed_address);
+				std::uint32_t instruction{};
+				if (!read_hks_diagnostic_memory(
+					instruction_address, &instruction, sizeof(instruction)))
+				{
+					diagnostic += std::format(
+						"[hks] vm instruction pc{:+} address={} unavailable\n",
+						offset, reinterpret_cast<const void*>(instruction_address));
+					continue;
+				}
+
+				const auto opcode = (instruction >> 25) & 0x7F;
+				const auto register_a = instruction & 0xFF;
+				auto instruction_diagnostic = std::format(
+					"[hks] vm instruction pc{:+} address={} word=0x{:08X} opcode={} A={}",
+					offset, reinterpret_cast<const void*>(instruction_address),
+					instruction, opcode, register_a);
+				if (activation_available && activation.m_base != nullptr)
+				{
+					const auto register_address =
+						reinterpret_cast<std::uintptr_t>(activation.m_base) +
+						register_a * sizeof(game::hks::HksObject);
+					game::hks::HksObject register_value{};
+					if (read_hks_diagnostic_memory(
+						register_address, &register_value, sizeof(register_value)))
+					{
+						instruction_diagnostic += std::format(
+							" R{}={}({}) payload=0x{:016X}",
+							register_a, hks_type_name(register_value.t),
+							static_cast<unsigned int>(register_value.t),
+							register_value.v.ui64);
+					}
+				}
+
+				diagnostic += instruction_diagnostic + "\n";
+			}
 		}
 
 		void append_hks_frame_diagnostics(
@@ -375,6 +502,7 @@ namespace ui_scripting
 
 		void log_hks_error(game::hks::lua_State* state, const char* error)
 		{
+			const auto vm_call_snapshot = last_hks_vm_call;
 			void* native_frames[32]{};
 			const auto native_frame_count = CaptureStackBackTrace(0, 32, native_frames, nullptr);
 			auto diagnostic = std::format("[hks] Lua error: {}\n", error);
@@ -388,6 +516,7 @@ namespace ui_scripting
 					static_cast<void*>(state->m_callStack.m_current));
 
 				append_hks_frame_diagnostics(diagnostic, state);
+				append_hks_vm_call_diagnostics(diagnostic, state, vm_call_snapshot);
 
 				for (int level = 0; level < 64; ++level)
 				{
@@ -742,13 +871,18 @@ namespace ui_scripting
 				is_mp_menus_main_chunk(chunk_name);
 			const auto capture_friends_menu = utils::flags::has_flag("hks_lui_load_trace") &&
 				is_friends_menu_chunk(chunk_name);
-			if (capture_cod_chunk || capture_mp_menus_main || capture_friends_menu)
+			const auto capture_mp_zombies_movies = utils::flags::has_flag("hks_lui_load_trace") &&
+				is_mp_zombies_movies_chunk(chunk_name);
+			if (capture_cod_chunk || capture_mp_menus_main || capture_friends_menu ||
+				capture_mp_zombies_movies)
 			{
 				const auto* const dump_path = capture_cod_chunk
 					? "hks_cod_lua_reader.bin"
 					: capture_mp_menus_main
 					? "hks_lui_mp_menus_main_reader.bin"
-					: "hks_lui_friendsmenu_reader.bin";
+					: capture_friends_menu
+					? "hks_lui_friendsmenu_reader.bin"
+					: "hks_lui_mp_zombies_movies_reader.bin";
 				std::FILE* dump_file{};
 				const auto open_result = ::fopen_s(&dump_file, dump_path, "wb");
 				if (open_result != 0 || dump_file == nullptr)
@@ -870,9 +1004,11 @@ namespace ui_scripting
 			if (utils::flags::has_flag("hks_error_diagnostics"))
 			{
 				hks_lua_error_hook.create(game::hks::hksi_luaL_error, &hks_lua_error_stub);
+				hks_vm_call_internal_hook.create(
+					game::hks::vm_call_internal, &hks_vm_call_internal_stub);
 				console::info(
 					"[ui_scripting] HKS error diagnostics enabled; stack traces will be written to "
-					"hks_error_diagnostics.log\n");
+					"hks_error_diagnostics.log with the last VM callsite\n");
 			}
 
 			if (utils::flags::has_flag("hks_cod_reader_dump") &&
