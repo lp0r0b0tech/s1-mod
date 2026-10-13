@@ -15,8 +15,14 @@
 
 #include "ui_scripting.hpp"
 
+#include <utils/flags.hpp>
 #include <utils/hook.hpp>
 #include <utils/io.hpp>
+
+#include <cstdarg>
+#include <cstddef>
+#include <cstdio>
+#include <string_view>
 
 namespace ui_scripting
 {
@@ -27,6 +33,7 @@ namespace ui_scripting
 		utils::hook::detour hks_start_hook;
 		utils::hook::detour hks_shutdown_hook;
 		utils::hook::detour hks_package_require_hook;
+		utils::hook::detour hks_lua_error_hook;
 
 		struct script
 		{
@@ -72,6 +79,34 @@ namespace ui_scripting
 			return state->globals.v.table;
 		}
 
+		void install_emblem_table_name_function(const table& lua)
+		{
+			const auto engine_value = lua["Engine"];
+			if (!engine_value.is<table>())
+			{
+				console::error(
+					"[ui_scripting] Cannot register Engine.GetPlayercardEmblemTableName: "
+					"global Engine is missing or is not a table\n");
+				return;
+			}
+
+			auto engine_type = engine_value.as<table>();
+			if (!engine_type["GetPlayercardEmblemTableName"].is<function>())
+			{
+				engine_type["GetPlayercardEmblemTableName"] = []()
+				{
+					return std::string("mp/emblemsorbackings.csv");
+				};
+			}
+		}
+
+		bool is_cod_lua_chunk(const char* chunk_name)
+		{
+			return chunk_name != nullptr &&
+				(std::string_view(chunk_name) == "@ui/LUI/CoD.lua" ||
+					std::string_view(chunk_name) == "ui/LUI/CoD.lua");
+		}
+
 		void print_error(const std::string& error)
 		{
 			console::error("************** LUI script execution error **************\n");
@@ -91,6 +126,75 @@ namespace ui_scripting
 			game::hks::hksi_lua_getstack(state, 1, &info);
 			game::hks::hksi_lua_getinfo(state, "nSl", &info);
 			return info.short_src;
+		}
+
+		void log_hks_error(game::hks::lua_State* state, const char* error)
+		{
+			void* native_frames[32]{};
+			const auto native_frame_count = CaptureStackBackTrace(0, 32, native_frames, nullptr);
+			auto diagnostic = std::format("[hks] Lua error: {}\n", error);
+
+			if (state != nullptr)
+			{
+				diagnostic += std::format(
+					"[hks] state={} status={} prior_error=0x{:08X} callstack_level={} current_frame={}\n",
+					static_cast<void*>(state), static_cast<int>(state->m_status),
+					static_cast<unsigned int>(state->m_error), state->m_callStack.m_hook_level,
+					static_cast<void*>(state->m_callStack.m_current));
+
+				for (int level = 1; level < 64; ++level)
+				{
+					game::hks::lua_Debug info{};
+					if (game::hks::hksi_lua_getstack(state, level, &info) == 0)
+					{
+						break;
+					}
+
+					if (game::hks::hksi_lua_getinfo(state, "nSl", &info) == 0)
+					{
+						diagnostic += std::format("[hks] frame[{}]: debug info unavailable\n", level);
+						continue;
+					}
+
+					diagnostic += std::format(
+						"[hks] frame[{}]: {}:{} type='{}' name='{}'\n",
+						level, info.short_src, info.currentline,
+						info.what != nullptr ? info.what : "<unknown>",
+						info.name != nullptr ? info.name : "<anonymous>");
+				}
+			}
+
+			for (USHORT i = 0; i < native_frame_count; ++i)
+			{
+				diagnostic += std::format("[hks] native_frame[{}]={}\n", i, native_frames[i]);
+			}
+
+			if (!utils::io::write_file("hks_error_diagnostics.log", diagnostic, true))
+			{
+				OutputDebugStringA("[ui_scripting] Failed to write hks_error_diagnostics.log\n");
+			}
+
+			OutputDebugStringA(diagnostic.c_str());
+		}
+
+		void hks_lua_error_stub(game::hks::lua_State* state, const char* format, ...)
+		{
+			char message[4096]{};
+			va_list args;
+			va_start(args, format);
+			const auto format_result = std::vsnprintf(message, sizeof(message),
+				format != nullptr ? format : "<null HKS error format>", args);
+			va_end(args);
+
+			if (format_result < 0)
+			{
+				std::snprintf(message, sizeof(message), "%s", "<failed to format HKS error message>");
+			}
+
+			log_hks_error(state, message);
+
+			using hks_lua_error_function = void(*)(game::hks::lua_State*, const char*, ...);
+			reinterpret_cast<hks_lua_error_function>(hks_lua_error_hook.get_original())(state, "%s", message);
 		}
 
 		int load_buffer(const std::string& name, const std::string& data)
@@ -151,6 +255,8 @@ namespace ui_scripting
 		void setup_functions()
 		{
 			const auto lua = get_globals();
+
+			install_emblem_table_name_function(lua);
 
 			using game = table;
 			auto game_type = game();
@@ -298,14 +404,104 @@ namespace ui_scripting
 			return header;
 		}
 
+		using hks_reader_function = unsigned char* (__fastcall*)(
+			game::hks::lua_State*, void*, std::size_t*);
+
+		// Preserve the HKS reader's result and user data while teeing each returned chunk.
+		struct hks_reader_capture
+		{
+			hks_reader_function reader;
+			void* reader_data;
+			std::FILE* dump_file;
+			std::size_t captured_bytes{};
+			bool write_failed{};
+		};
+
+		unsigned char* __fastcall hks_reader_capture_stub(
+			game::hks::lua_State* state, void* reader_data, std::size_t* size)
+		{
+			auto* const capture = static_cast<hks_reader_capture*>(reader_data);
+			auto* const chunk = capture->reader(state, capture->reader_data, size);
+			if (chunk != nullptr && size != nullptr && *size != 0 && !capture->write_failed)
+			{
+				const auto written = std::fwrite(chunk, 1, *size, capture->dump_file);
+				if (written != *size)
+				{
+					capture->write_failed = true;
+				}
+				else
+				{
+					capture->captured_bytes += written;
+				}
+			}
+
+			return chunk;
+		}
+
 		int hks_load_stub(game::hks::lua_State* state, void* compiler_options, 
 			void* reader, void* reader_data, const char* chunk_name)
 		{
+			if (is_cod_lua_chunk(chunk_name))
+			{
+				install_emblem_table_name_function(table{state->globals.v.table});
+			}
+
 			if (globals.load_raw_script)
 			{
 				globals.load_raw_script = false;
 				globals.loaded_scripts.push_back({globals.raw_script_name, globals.in_require_script});
 				return load_buffer(globals.raw_script_name, utils::io::read_file(globals.raw_script_name));
+			}
+
+			if (utils::flags::has_flag("hks_cod_reader_dump") && is_cod_lua_chunk(chunk_name))
+			{
+				constexpr auto dump_path = "hks_cod_lua_reader.bin";
+				std::FILE* dump_file{};
+				const auto open_result = ::fopen_s(&dump_file, dump_path, "wb");
+				if (open_result != 0 || dump_file == nullptr)
+				{
+					console::error(
+						"[ui_scripting] Failed to open '%s' for the HKS CoD.lua reader dump (error=%d)\n",
+						dump_path, open_result);
+				}
+				else if (reader == nullptr)
+				{
+					const auto close_result = std::fclose(dump_file);
+					console::error(
+						"[ui_scripting] HKS reader for '%s' is null; using the original loader path "
+						"(dump_close_failed=%d)\n",
+						chunk_name, close_result != 0 ? 1 : 0);
+				}
+				else
+				{
+					auto capture = hks_reader_capture{
+						reinterpret_cast<hks_reader_function>(reader),
+						reader_data,
+						dump_file,
+					};
+					const auto result = utils::hook::invoke<int>(
+						0x14009CA10, state, compiler_options, &hks_reader_capture_stub, &capture, chunk_name);
+					const auto close_result = std::fclose(dump_file);
+
+					if (capture.write_failed || close_result != 0)
+					{
+						console::error(
+							"[ui_scripting] HKS CoD.lua reader dump failed after %llu bytes "
+							"(reader_write_failed=%d, close_failed=%d, loader_result=%d)\n",
+							static_cast<unsigned long long>(capture.captured_bytes),
+							capture.write_failed ? 1 : 0, close_result != 0 ? 1 : 0, result);
+					}
+					else
+					{
+						console::info(
+							"[ui_scripting] Captured %llu bytes from the stock HKS reader for '%s' "
+							"to '%s' (loader_result=%d)\n",
+							static_cast<unsigned long long>(capture.captured_bytes),
+							chunk_name, dump_path, result);
+					}
+
+					return result;
+				}
 			}
 
 			return utils::hook::invoke<int>(0x14009CA10, state, compiler_options, reader, reader_data, chunk_name);
@@ -370,6 +566,32 @@ namespace ui_scripting
 		{
 			if (!game::environment::is_mp())
 			{
+				return;
+			}
+
+			if (utils::flags::has_flag("hks_error_diagnostics"))
+			{
+				hks_lua_error_hook.create(game::hks::hksi_luaL_error, &hks_lua_error_stub);
+				console::info(
+					"[ui_scripting] HKS error diagnostics enabled; stack traces will be written to "
+					"hks_error_diagnostics.log\n");
+			}
+
+			if (utils::flags::has_flag("hks_cod_reader_dump") &&
+				!utils::flags::has_flag("no_hks_ui_hooks"))
+			{
+				console::info(
+					"[ui_scripting] HKS reader capture enabled for @ui/LUI/CoD.lua; "
+					"data will be written to hks_cod_lua_reader.bin\n");
+			}
+
+			if (utils::flags::has_flag("no_hks_ui_hooks"))
+			{
+				console::info(
+					"HKS UI hooks bypassed by -no_hks_ui_hooks: DB-find "
+					"(0x1400CB68B, 0x1400CB7D6), HKS-load (0x1400CB861), package-require "
+					"(0x1400781D0), start (0x1400E4E40), shutdown (0x1400DB9A0). "
+					"No hooks in this set were installed.\n");
 				return;
 			}
 

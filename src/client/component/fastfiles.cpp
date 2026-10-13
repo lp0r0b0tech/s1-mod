@@ -7,8 +7,13 @@
 #include "console.hpp"
 
 #include <utils/concurrency.hpp>
+#include <utils/flags.hpp>
 #include <utils/hook.hpp>
 #include <utils/io.hpp>
+
+#include <algorithm>
+#include <cstdarg>
+#include <cstdio>
 
 namespace fastfiles
 {
@@ -19,6 +24,84 @@ namespace fastfiles
 		utils::hook::detour db_try_load_x_file_internal_hook;
 		utils::hook::detour db_find_x_asset_header_hook;
 		utils::hook::detour db_read_stream_file_hook;
+		utils::hook::detour sys_error_hook;
+
+		void capture_font_pool_error(const char* error)
+		{
+			const auto type = game::ASSET_TYPE_FONT;
+			const auto capacity = game::g_poolSize[type];
+			const auto* const pool = static_cast<const game::Font_s*>(game::DB_XAssetPool[type]);
+			const auto fastfile = get_current_fastfile();
+			auto diagnostic = std::format(
+				"[fastfiles] Font-pool limit error: {}\n"
+				"[fastfiles] fastfile='{}' pool={} capacity={} element_size={} bytes\n",
+				error, fastfile, static_cast<const void*>(pool), capacity, sizeof(game::Font_s));
+
+			if (pool != nullptr && capacity >= 0)
+			{
+				constexpr auto max_entries_to_log = 256;
+				const auto entry_count = std::min(capacity, max_entries_to_log);
+				int used = 0;
+				for (auto i = 0; i < entry_count; ++i)
+				{
+					used += pool[i].fontName != nullptr && pool[i].fontName[0] != '\0';
+				}
+
+				diagnostic += std::format(
+					"[fastfiles] registered fonts in first {} pool entries: {}\n", entry_count, used);
+
+				for (auto i = 0; i < entry_count; ++i)
+				{
+					const auto* const name = pool[i].fontName;
+					if (name != nullptr && name[0] != '\0')
+					{
+						diagnostic += std::format("[fastfiles] font[{}]='{}'\n", i, name);
+					}
+				}
+
+				if (entry_count < capacity)
+				{
+					diagnostic += std::format("[fastfiles] listed first {} pool entries only\n", entry_count);
+				}
+			}
+			else
+			{
+				diagnostic += "[fastfiles] font-pool entries unavailable\n";
+			}
+
+			if (!utils::io::write_file("font_pool_diagnostics.log", diagnostic, true))
+			{
+				OutputDebugStringA("[fastfiles] Failed to write font_pool_diagnostics.log\n");
+				OutputDebugStringA(diagnostic.c_str());
+			}
+			else
+			{
+				OutputDebugStringA(diagnostic.c_str());
+			}
+		}
+
+		void sys_error_stub(const char* format, ...)
+		{
+			char message[4096]{};
+			va_list args;
+			va_start(args, format);
+			const auto format_result = std::vsnprintf(message, sizeof(message),
+				format != nullptr ? format : "<null Sys_Error format>", args);
+			va_end(args);
+
+			if (format_result < 0)
+			{
+				std::snprintf(message, sizeof(message), "%s", "<failed to format Sys_Error message>");
+			}
+
+			if (std::strstr(message, "limit") != nullptr && std::strstr(message, "font") != nullptr)
+			{
+				capture_font_pool_error(message);
+			}
+
+			using sys_error_function = void(*)(const char*, ...);
+			reinterpret_cast<sys_error_function>(sys_error_hook.get_original())("%s", message);
+		}
 
 		int db_read_stream_file_stub(int allow_abort, int finish)
 		{
@@ -140,6 +223,14 @@ namespace fastfiles
 	public:
 		void post_unpack() override
 		{
+			if (utils::flags::has_flag("font_pool_diagnostics"))
+			{
+				sys_error_hook.create(game::Sys_Error, &sys_error_stub);
+				console::info(
+					"[fastfiles] Font-pool diagnostics enabled; overflow details will be written to "
+					"font_pool_diagnostics.log\n");
+			}
+
 			db_try_load_x_file_internal_hook.create(SELECT_VALUE(0x1401816F0, 0x1402741C0), &db_try_load_x_file_internal);
 
 			db_find_x_asset_header_hook.create(game::DB_FindXAssetHeader, db_find_x_asset_header_stub);
