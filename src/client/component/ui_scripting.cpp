@@ -103,7 +103,7 @@ namespace ui_scripting
 			}
 		}
 
-		void log_emblem_table_name_status(const char* stage, const table& lua)
+		void log_engine_status(const char* stage, const table& lua)
 		{
 			if (!utils::flags::has_flag("hks_lui_load_trace"))
 			{
@@ -116,7 +116,8 @@ namespace ui_scripting
 			{
 				console::info(
 					"[ui_scripting] HKS LUI trace: %s Engine=%s(%u), "
-					"Engine.GetPlayercardEmblemTableName=<unavailable>\n",
+					"Engine.GetPlayercardEmblemTableName=<unavailable>, "
+					"Engine.IsSteam=<unavailable>\n",
 					stage, hks_type_name(engine_object_type),
 					static_cast<unsigned int>(engine_object_type));
 				return;
@@ -125,13 +126,18 @@ namespace ui_scripting
 			const auto engine_type = engine_value.as<table>();
 			const auto function_value = engine_type["GetPlayercardEmblemTableName"];
 			const auto function_object_type = function_value.get_raw().t;
+			const auto is_steam_value = engine_type["IsSteam"];
+			const auto is_steam_object_type = is_steam_value.get_raw().t;
 			console::info(
 				"[ui_scripting] HKS LUI trace: %s Engine=%s(%u), "
-				"Engine.GetPlayercardEmblemTableName=%s(%u)\n",
+				"Engine.GetPlayercardEmblemTableName=%s(%u), "
+				"Engine.IsSteam=%s(%u)\n",
 				stage, hks_type_name(engine_object_type),
 				static_cast<unsigned int>(engine_object_type),
 				hks_type_name(function_object_type),
-				static_cast<unsigned int>(function_object_type));
+				static_cast<unsigned int>(function_object_type),
+				hks_type_name(is_steam_object_type),
+				static_cast<unsigned int>(is_steam_object_type));
 		}
 
 		bool is_lui_chunk_name(const char* chunk_name)
@@ -194,6 +200,29 @@ namespace ui_scripting
 					return std::string(table_name);
 				};
 			}
+		}
+
+		void install_is_steam_diagnostic_function(const table& lua)
+		{
+			const auto engine_value = lua["Engine"];
+			if (!engine_value.is<table>())
+			{
+				console::error(
+					"[ui_scripting] Cannot register diagnostic Engine.IsSteam: "
+					"global Engine is missing or is not a table\n");
+				return;
+			}
+
+			auto engine_type = engine_value.as<table>();
+			const auto previous_type = engine_type["IsSteam"].get_raw().t;
+			console::info(
+				"[ui_scripting] HKS Steam diagnostic: overriding Engine.IsSteam from %s(%u); "
+				"shim returns true\n",
+				hks_type_name(previous_type), static_cast<unsigned int>(previous_type));
+			engine_type["IsSteam"] = []()
+			{
+				return true;
+			};
 		}
 
 		bool is_cod_lua_chunk(const char* chunk_name)
@@ -474,9 +503,9 @@ namespace ui_scripting
 		{
 			const auto lua = get_globals();
 
-			log_emblem_table_name_status("setup_functions before registration", lua);
+			log_engine_status("setup_functions before registration", lua);
 			install_emblem_table_name_function(lua);
-			log_emblem_table_name_status("setup_functions after registration", lua);
+			log_engine_status("setup_functions after registration", lua);
 
 			using game = table;
 			auto game_type = game();
@@ -678,15 +707,23 @@ namespace ui_scripting
 				console::info(
 					"[ui_scripting] HKS LUI trace: load enter chunk='%s' state=%p\n",
 					chunk_name != nullptr ? chunk_name : "<null>", static_cast<void*>(state));
-				log_emblem_table_name_status(
+				log_engine_status(
 					"load entry", table{state->globals.v.table});
 			}
 
 			if (is_cod_lua_chunk(chunk_name))
 			{
 				install_emblem_table_name_function(table{state->globals.v.table});
-				log_emblem_table_name_status(
+				log_engine_status(
 					"after CoD.lua registration", table{state->globals.v.table});
+			}
+
+			if (utils::flags::has_flag("hks_is_steam_diagnostic") &&
+				is_friends_menu_chunk(chunk_name))
+			{
+				const auto lua = table{state->globals.v.table};
+				install_is_steam_diagnostic_function(lua);
+				log_engine_status("after Steam diagnostic registration", lua);
 			}
 
 			if (globals.load_raw_script)
