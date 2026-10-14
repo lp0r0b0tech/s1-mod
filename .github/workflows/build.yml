@@ -78,6 +78,18 @@ jobs:
         with:
           name: ${{ matrix.configuration }} Tracer diagnostic Binary
           path: build/bin/x64/${{ matrix.configuration }}/s1x.exe
+
+      - name: Upload LOADED_SOUND diagnostic pull request binary
+        if: >-
+          matrix.configuration == 'Release' &&
+          github.repository == 'lp0r0b0tech/s1-mod' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.base.ref == 'lp0r0b0tech-opt-in-tracer-pool-probe' &&
+          github.head_ref == 'lp0r0b0tech-h2o-sound-pool-capacity'
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: Release LOADED_SOUND diagnostic Binary
+          path: build/bin/x64/Release/s1x.exe
             
       - name: Upload ${{matrix.configuration}} data artifacts
         if: matrix.configuration == 'Release' && github.repository_owner == 'CBServers' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop')

@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 namespace fastfiles
@@ -194,6 +196,19 @@ namespace fastfiles
 		return asset_type_sizes[type];
 	}
 
+	namespace
+	{
+		constexpr auto diagnostic_loaded_sound_pool_size = 14000;
+		constexpr auto diagnostic_loaded_sound_element_size = 64;
+		alignas(diagnostic_loaded_sound_element_size)
+			char diagnostic_loaded_sound_pool[
+				diagnostic_loaded_sound_pool_size * diagnostic_loaded_sound_element_size]{};
+
+		static_assert(
+			get_asset_type_size(game::ASSET_TYPE_LOADED_SOUND) ==
+			diagnostic_loaded_sound_element_size);
+	}
+
 	template <game::XAssetType Type, size_t Size>
 	char* reallocate_asset_pool()
 	{
@@ -362,6 +377,72 @@ namespace fastfiles
 							old_pool_size * get_asset_type_size(tracer_type)),
 						static_cast<unsigned long long>(
 							game::g_poolSize[tracer_type] * get_asset_type_size(tracer_type)));
+				}
+			}
+
+			if (game::environment::is_mp() &&
+				utils::flags::has_flag("loaded_sound_pool_14000_diagnostic"))
+			{
+				const auto loaded_sound_type = game::ASSET_TYPE_LOADED_SOUND;
+				const auto old_pool = game::DB_XAssetPool[loaded_sound_type];
+				const auto old_pool_size = game::g_poolSize[loaded_sound_type];
+				const auto loaded_sound_element_size = get_asset_type_size(loaded_sound_type);
+				const auto engine_loaded_sound_element_size =
+					game::DB_GetXAssetTypeSize(loaded_sound_type);
+				if (loaded_sound_element_size != diagnostic_loaded_sound_element_size ||
+					engine_loaded_sound_element_size != diagnostic_loaded_sound_element_size)
+				{
+					console::error(
+						"[fastfiles] Diagnostic LOADED_SOUND pool override skipped: "
+						"capacity %d -> %d; expected element size %d, table size %d, engine size %d\n",
+						old_pool_size, old_pool_size, diagnostic_loaded_sound_element_size,
+						loaded_sound_element_size, engine_loaded_sound_element_size);
+				}
+				else if (old_pool == nullptr || old_pool_size <= 0)
+				{
+					console::error(
+						"[fastfiles] Diagnostic LOADED_SOUND pool override skipped: "
+						"capacity %d -> %d (pool=%p)\n",
+						old_pool_size, old_pool_size, old_pool);
+				}
+				else if (reinterpret_cast<std::uintptr_t>(old_pool) % alignof(void*) != 0)
+				{
+					console::error(
+						"[fastfiles] Diagnostic LOADED_SOUND pool override skipped: "
+						"capacity %d -> %d; current pool %p is not pointer-aligned\n",
+						old_pool_size, old_pool_size, old_pool);
+				}
+				else if (old_pool_size > diagnostic_loaded_sound_pool_size)
+				{
+					console::warn(
+						"[fastfiles] Diagnostic LOADED_SOUND pool override skipped: "
+						"capacity %d -> %d; current pool exceeds requested capacity %d\n",
+						old_pool_size, old_pool_size, diagnostic_loaded_sound_pool_size);
+				}
+				else if (old_pool_size == diagnostic_loaded_sound_pool_size)
+				{
+					console::info(
+						"[fastfiles] Diagnostic LOADED_SOUND pool size unchanged: %d -> %d\n",
+						old_pool_size, old_pool_size);
+				}
+				else
+				{
+					const auto old_pool_bytes =
+						static_cast<std::size_t>(old_pool_size) * loaded_sound_element_size;
+					std::memmove(diagnostic_loaded_sound_pool, old_pool, old_pool_bytes);
+
+					game::DB_XAssetPool[loaded_sound_type] = diagnostic_loaded_sound_pool;
+					game::g_poolSize[loaded_sound_type] = diagnostic_loaded_sound_pool_size;
+					console::info(
+						"[fastfiles] Diagnostic LOADED_SOUND pool override: capacity %d -> %d "
+						"(element_size=%d, bytes=%llu -> %llu, buffer_alignment=64 bytes); "
+						"process-lifetime static storage; original pool is retained and cached "
+						"pointers are not rebased; opt-in startup diagnostic only\n",
+						old_pool_size, game::g_poolSize[loaded_sound_type],
+						loaded_sound_element_size,
+						static_cast<unsigned long long>(old_pool_bytes),
+						static_cast<unsigned long long>(
+							diagnostic_loaded_sound_pool_size * loaded_sound_element_size));
 				}
 			}
 
